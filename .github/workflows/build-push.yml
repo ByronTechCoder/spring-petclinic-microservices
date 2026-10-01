@@ -212,7 +212,7 @@ jobs:
       # Full report (CRITICAL + HIGH) for visibility — never fails the
       # build by itself; HIGH is a warning, not a gate (PETPLAT-105).
       - name: Trivy scan (report)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: "${{ env.ECR_REGISTRY }}/petclinic-dev/${{ matrix.service }}:${{ needs.detect-changes.outputs.sha7 }}"
           format: table
@@ -231,7 +231,7 @@ jobs:
       # HIGH findings above are visible in the uploaded report but never
       # block the pipeline.
       - name: Trivy scan (CRITICAL gate)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: "${{ env.ECR_REGISTRY }}/petclinic-dev/${{ matrix.service }}:${{ needs.detect-changes.outputs.sha7 }}"
           format: table
