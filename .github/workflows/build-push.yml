@@ -1,0 +1,266 @@
+# Build and Push (PETPLAT-49, PETPLAT-105) — CI only. ArgoCD (in the
+# petclinic-platform repo) handles deployment; this workflow never runs
+# kubectl/helm, it only builds, scans, and pushes images, then tells the
+# platform repo what changed.
+#
+# Flow: detect-changes (paths-filter) → build (matrix, one job per changed
+# service: Maven package → ARM64 docker build → Trivy gate → ECR push) →
+# dispatch (repository_dispatch "app-image-built" to petclinic-platform).
+#
+# No separate reusable workflow/action was extracted here (PETPLAT-53 asked
+# for this "if appropriate"): the natural reusable unit — ECR login
+# (configure-aws-credentials + amazon-ecr-login) — must run in the SAME job
+# as the docker push to share its authenticated Docker/AWS session; GitHub's
+# job-level `uses: ./workflow.yml` reusable-workflow mechanism runs as a
+# separate job with its own runner, so it can't carry that session back into
+# this one. The steps below are already thin wrappers around GitHub's own
+# reusable building blocks (aws-actions/configure-aws-credentials,
+# aws-actions/amazon-ecr-login, aquasecurity/trivy-action) with only one
+# consumer today, so a bespoke composite action/reusable workflow on top
+# would add indirection without removing real duplication yet.
+name: Build and Push
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write # required for OIDC (aws-actions/configure-aws-credentials)
+  contents: read
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+
+jobs:
+  # ── Detect which of the 8 services changed ─────────────────────────────
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.matrix.outputs.services }} # JSON array, e.g. ["customers-service","vets-service"] — for the build job's matrix
+      services_list: ${{ steps.matrix.outputs.services_list }} # space-separated, e.g. "customers-service vets-service" — matches petclinic-platform's update-image-tags.yml payload contract
+      has_changes: ${{ steps.matrix.outputs.has_changes }}
+      sha7: ${{ steps.sha.outputs.sha7 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Short SHA
+        id: sha
+        run: echo "sha7=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # Filter names are the SHORT service names (matching petclinic-platform's
+      # helm-values/{service}.yaml and ECR repo names), NOT this repo's
+      # spring-petclinic-{service} directory names — the mapping is a plain
+      # prefix strip, done here via the path pattern below.
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            config-server:
+              - 'spring-petclinic-config-server/**'
+            discovery-server:
+              - 'spring-petclinic-discovery-server/**'
+            api-gateway:
+              - 'spring-petclinic-api-gateway/**'
+            customers-service:
+              - 'spring-petclinic-customers-service/**'
+            visits-service:
+              - 'spring-petclinic-visits-service/**'
+            vets-service:
+              - 'spring-petclinic-vets-service/**'
+            genai-service:
+              - 'spring-petclinic-genai-service/**'
+            admin-server:
+              - 'spring-petclinic-admin-server/**'
+
+      # paths-filter's outputs are individual booleans, not a ready-made
+      # matrix array — assemble both the JSON array (matrix) and
+      # space-separated string (dispatch payload) from them here. Plain
+      # bash, not `${{ }}` expressions, since GitHub Actions expression
+      # syntax has no dynamic/indirect property lookup (can't do
+      # steps.filter.outputs[a-shell-variable]).
+      - name: Build services list
+        id: matrix
+        env:
+          CONFIG_SERVER: ${{ steps.filter.outputs.config-server }}
+          DISCOVERY_SERVER: ${{ steps.filter.outputs.discovery-server }}
+          API_GATEWAY: ${{ steps.filter.outputs.api-gateway }}
+          CUSTOMERS_SERVICE: ${{ steps.filter.outputs.customers-service }}
+          VISITS_SERVICE: ${{ steps.filter.outputs.visits-service }}
+          VETS_SERVICE: ${{ steps.filter.outputs.vets-service }}
+          GENAI_SERVICE: ${{ steps.filter.outputs.genai-service }}
+          ADMIN_SERVER: ${{ steps.filter.outputs.admin-server }}
+        run: |
+          declare -A changed=(
+            [config-server]="$CONFIG_SERVER"
+            [discovery-server]="$DISCOVERY_SERVER"
+            [api-gateway]="$API_GATEWAY"
+            [customers-service]="$CUSTOMERS_SERVICE"
+            [visits-service]="$VISITS_SERVICE"
+            [vets-service]="$VETS_SERVICE"
+            [genai-service]="$GENAI_SERVICE"
+            [admin-server]="$ADMIN_SERVER"
+          )
+          services=()
+          # Fixed iteration order (not "${!changed[@]}", which is unordered)
+          # so services_list/commit messages downstream are deterministic.
+          for name in config-server discovery-server api-gateway customers-service visits-service vets-service genai-service admin-server; do
+            if [ "${changed[$name]}" = "true" ]; then
+              services+=("${name}")
+            fi
+          done
+
+          if [ ${#services[@]} -eq 0 ]; then
+            echo "services=[]" >> "$GITHUB_OUTPUT"
+            echo "services_list=" >> "$GITHUB_OUTPUT"
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          json=$(printf '"%s",' "${services[@]}")
+          json="[${json%,}]"
+          echo "services=${json}" >> "$GITHUB_OUTPUT"
+          echo "services_list=${services[*]}" >> "$GITHUB_OUTPUT"
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+
+  # ── Build, scan, push one image per changed service (matrix) ──────────
+  build:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false # one service's failure shouldn't cancel the others' independent builds
+      matrix:
+        service: ${{ fromJson(needs.detect-changes.outputs.services) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: temurin
+          cache: maven
+
+      # ARM cross-compilation (technical-spec.md#build-steps-build-pushyml):
+      # GitHub-hosted runners are x86_64; QEMU + Buildx let us produce a real
+      # linux/arm64 image for the Graviton (t4g.small) EKS nodes.
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+
+      # OIDC — no long-lived AWS keys (PETPLAT-52's role, assumed here from
+      # the APPLICATION repo's context, matching that role's trust policy).
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and test spring-petclinic-${{ matrix.service }}
+        run: ./mvnw -B -pl "spring-petclinic-${{ matrix.service }}" -am clean install
+
+      - name: Resolve jar filename
+        id: artifact
+        run: |
+          name=$(./mvnw -q -pl "spring-petclinic-${{ matrix.service }}" help:evaluate -Dexpression=project.build.finalName -DforceStdout)
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve service port
+        id: port
+        run: |
+          # Deliberately NOT read from this repo's pom.xml docker.image.exposed.port
+          # properties — several of them are stale/incorrect upstream (e.g. several
+          # services are left at a copy-pasted 8081 or inherit the root default of
+          # 9090). This table matches petclinic-platform's docs/technical-spec.md
+          # Application Services table, which is the authoritative, verified-working
+          # port for each service (confirmed via this platform's own E2E deployment).
+          declare -A ports=(
+            [config-server]=8888
+            [discovery-server]=8761
+            [api-gateway]=8080
+            [customers-service]=8081
+            [visits-service]=8082
+            [vets-service]=8083
+            [genai-service]=8084
+            [admin-server]=9090
+          )
+          echo "port=${ports[${{ matrix.service }}]}" >> "$GITHUB_OUTPUT"
+
+      # Built with --load (not --push) so Trivy can scan the image locally
+      # BEFORE it ever reaches ECR (PETPLAT-105: "Trivy scan step added ...
+      # before pushing to ECR" — the scan gates the push, not the other way
+      # around). --provenance=false keeps this a single-manifest image, not
+      # an index+attestation bundle, matching technical-spec.md's note on
+      # why ECR would otherwise show extra untagged images per push.
+      - name: Build linux/arm64 image
+        run: |
+          docker buildx build \
+            --platform linux/arm64 \
+            --provenance=false \
+            --load \
+            -f docker/Dockerfile \
+            --build-arg ARTIFACT_NAME="${{ steps.artifact.outputs.name }}" \
+            --build-arg EXPOSED_PORT="${{ steps.port.outputs.port }}" \
+            -t "${{ env.ECR_REGISTRY }}/petclinic-dev/${{ matrix.service }}:${{ needs.detect-changes.outputs.sha7 }}" \
+            "spring-petclinic-${{ matrix.service }}/target"
+
+      # Full report (CRITICAL + HIGH) for visibility — never fails the
+      # build by itself; HIGH is a warning, not a gate (PETPLAT-105).
+      - name: Trivy scan (report)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: "${{ env.ECR_REGISTRY }}/petclinic-dev/${{ matrix.service }}:${{ needs.detect-changes.outputs.sha7 }}"
+          format: table
+          severity: "CRITICAL,HIGH"
+          exit-code: "0"
+          ignorefile: ".trivyignore" # allowlist for known/accepted CVEs — see that file's header for how to add entries
+          output: "trivy-report-${{ matrix.service }}.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report-${{ matrix.service }}
+          path: trivy-report-${{ matrix.service }}.txt
+          retention-days: 30
+
+      # The actual gate: CRITICAL only, fails the job (exit-code 1) —
+      # HIGH findings above are visible in the uploaded report but never
+      # block the pipeline.
+      - name: Trivy scan (CRITICAL gate)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: "${{ env.ECR_REGISTRY }}/petclinic-dev/${{ matrix.service }}:${{ needs.detect-changes.outputs.sha7 }}"
+          format: table
+          severity: CRITICAL
+          exit-code: "1"
+          ignorefile: ".trivyignore"
+
+      - name: Push to ECR
+        run: docker push "${{ env.ECR_REGISTRY }}/petclinic-dev/${{ matrix.service }}:${{ needs.detect-changes.outputs.sha7 }}"
+
+  # ── Tell petclinic-platform what was built, so it can update image tags ──
+  dispatch:
+    needs: [detect-changes, build]
+    if: needs.detect-changes.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # A direct REST call rather than a third-party dispatch action — this
+      # step handles PLATFORM_REPO_TOKEN (a PAT with write access to another
+      # repo), so it's worth not routing it through extra third-party code.
+      - name: Fire repository_dispatch to petclinic-platform
+        env:
+          PLATFORM_REPO_TOKEN: ${{ secrets.PLATFORM_REPO_TOKEN }}
+          SHA7: ${{ needs.detect-changes.outputs.sha7 }}
+          SERVICES_LIST: ${{ needs.detect-changes.outputs.services_list }}
+        run: |
+          curl -sS -f -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${PLATFORM_REPO_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/ByronTechCoder/petclinic-platform/dispatches" \
+            -d "$(jq -n --arg sha "$SHA7" --arg services "$SERVICES_LIST" \
+                  '{event_type: "app-image-built", client_payload: {sha: $sha, services: $services}}")"

@@ -1,0 +1,17 @@
+# Trivy allowlist for known/accepted CVEs (PETPLAT-105).
+#
+# Used by .github/workflows/build-push.yml's Trivy scan steps via
+# --ignorefile (this file). Entries here are suppressed from BOTH the
+# CRITICAL,HIGH report and the CRITICAL-only gate — so a CRITICAL CVE listed
+# here will NOT fail the build.
+#
+# How to add an entry:
+#   1. Confirm the CVE is a false positive, unexploitable in how this image
+#      is actually used, or has no upstream fix yet and the risk is accepted.
+#   2. Add one line per CVE ID below, with a comment explaining why.
+#   3. Re-run the pipeline to confirm the build now passes.
+#   4. Revisit periodically — remove the entry once a real fix is available
+#      upstream (check: `trivy image --severity CRITICAL,HIGH {image}` locally).
+#
+# Format: one CVE ID per line, e.g.:
+# CVE-2023-12345  # reason this is accepted, and since when
