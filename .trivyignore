@@ -15,19 +15,3 @@
 #
 # Format: one CVE ID per line, e.g.:
 # CVE-2023-12345  # reason this is accepted, and since when
-
-# --- TEMPORARY: admin-server CI pipeline E2E test (2026-10-01) ---
-# These are REAL, currently-unfixed CRITICAL CVEs in admin-server's bundled
-# dependencies (Netty, BouncyCastle) — found by the first real run of
-# build-push.yml, correctly blocking the push. Allowlisted ONLY to validate
-# the rest of the pipeline (push + repository_dispatch) end-to-end; this is
-# NOT a security review or an accepted-risk decision. Remove these entries
-# and either bump the vulnerable dependencies' versions or get a proper
-# risk acceptance before relying on this pipeline for real deployments.
-CVE-2026-75595  # netty-handler 4.2.9.Final — SNI routing bypass via fragmented TLS ClientHello; fix: 4.2.17.Final / 4.1.137.Final
-CVE-2025-14813  # bcprov-jdk18on 1.81 — GOSTCTR implementation; fix: 1.80.2 / 1.81.1 / 1.84
-CVE-2026-8763   # bcprov/bcpkix-jdk15on — name constraints bypass via trailing dot; fix: 1.85
-CVE-2026-40477  # transitive dependency — see Trivy report artifact for details
-CVE-2026-40478  # transitive dependency — see Trivy report artifact for details
-CVE-2026-40976  # transitive dependency — see Trivy report artifact for details
-CVE-2026-41901  # transitive dependency — see Trivy report artifact for details

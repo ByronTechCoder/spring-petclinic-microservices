@@ -20,7 +20,6 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
 
-// CI test trigger (retry after fixing the dispatch step's jq quoting bug, with PLATFORM_REPO_TOKEN now set): build-push.yml end-to-end test (PETPLAT-49/105/52), safe to revert after the run is verified.
 @SpringBootApplication
 @EnableAdminServer
 @EnableDiscoveryClient
