@@ -20,6 +20,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
 
+// GitOps loop test (PETPLAT-116): this comment change triggers a dev CI build.
 @SpringBootApplication
 @EnableAdminServer
 @EnableDiscoveryClient
