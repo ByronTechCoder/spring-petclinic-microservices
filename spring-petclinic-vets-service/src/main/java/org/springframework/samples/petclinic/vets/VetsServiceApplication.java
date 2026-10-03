@@ -25,7 +25,7 @@ import org.springframework.samples.petclinic.vets.system.VetsProperties;
  * @author Maciej Szarlinski
  */
 @EnableDiscoveryClient
-// GitOps loop test (PETPLAT-116): comment-only change triggers a dev CI build.
+// GitOps loop test (PETPLAT-116): comment-only change triggers a dev CI build (run 2).
 @SpringBootApplication
 @EnableConfigurationProperties(VetsProperties.class)
 public class VetsServiceApplication {
