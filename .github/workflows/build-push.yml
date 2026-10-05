@@ -72,6 +72,13 @@ jobs:
               - 'spring-petclinic-genai-service/**'
             admin-server:
               - 'spring-petclinic-admin-server/**'
+            # Shared inputs (root pom, CVE allowlist, Dockerfile, this workflow)
+            # affect every image, so a match rebuilds all services.
+            shared:
+              - 'pom.xml'
+              - '.trivyignore'
+              - 'docker/**'
+              - '.github/workflows/build-push.yml'
 
       # paths-filter's outputs are individual booleans, not a ready-made
       # matrix array — assemble both the JSON array (matrix) and
@@ -90,7 +97,12 @@ jobs:
           VETS_SERVICE: ${{ steps.filter.outputs.vets-service }}
           GENAI_SERVICE: ${{ steps.filter.outputs.genai-service }}
           ADMIN_SERVER: ${{ steps.filter.outputs.admin-server }}
+          SHARED: ${{ steps.filter.outputs.shared }}
         run: |
+          if [ "$SHARED" = "true" ]; then
+            CONFIG_SERVER=true DISCOVERY_SERVER=true API_GATEWAY=true CUSTOMERS_SERVICE=true
+            VISITS_SERVICE=true VETS_SERVICE=true GENAI_SERVICE=true ADMIN_SERVER=true
+          fi
           declare -A changed=(
             [config-server]="$CONFIG_SERVER"
             [discovery-server]="$DISCOVERY_SERVER"
