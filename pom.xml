@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>4.0.1</version>
+        <version>4.0.6</version>
     </parent>
 
     <groupId>org.springframework.samples</groupId>
@@ -30,6 +30,12 @@
         <java.version>17</java.version>
 
         <spring-cloud.version>2025.1.0</spring-cloud.version>
+        <!-- Pinned above the Spring Boot BOM to clear known CRITICAL CVEs in the shared dependency tree. -->
+        <netty.version>4.2.17.Final</netty.version>
+        <tomcat.version>11.0.25</tomcat.version>
+        <bouncycastle.version>1.85</bouncycastle.version>
+        <freemarker.version>2.3.35</freemarker.version>
+        <spring-cloud-config-server.version>5.0.3</spring-cloud-config-server.version>
         <chaos-monkey-spring-boot.version>3.1.0</chaos-monkey-spring-boot.version>
         <jolokia-core.version>1.7.1</jolokia-core.version>
         <datasource-micrometer.version>2.0.1</datasource-micrometer.version>
@@ -49,6 +55,21 @@
 
     <dependencyManagement>
         <dependencies>
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcprov-jdk18on</artifactId>
+                <version>${bouncycastle.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcpkix-jdk18on</artifactId>
+                <version>${bouncycastle.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-config-server</artifactId>
+                <version>${spring-cloud-config-server.version}</version>
+            </dependency>
             <dependency>
                 <groupId>org.springframework.cloud</groupId>
                 <artifactId>spring-cloud-dependencies</artifactId>
